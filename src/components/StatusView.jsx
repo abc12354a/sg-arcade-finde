@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useMemo, useState } from "react";
+import { useAuth } from "../auth/AuthContext.jsx";
 import { CHAINS, CHAIN_COLORS, GAMES, STATUS, STATUS_BY_KEY, STATUS_GAMES } from "../constants.js";
 import { arcadeHasStatus, formatDate, getGameEntry, summarizeGame } from "../utils/status.js";
+import MachineStatusEditor from "./MachineStatusEditor.jsx";
 
 const GAME_LABEL = Object.fromEntries(GAMES.map((g) => [g.key, g.label]));
 const SHEET_URL =
@@ -47,22 +49,55 @@ function GameStatusBlock({ gameKey, entry }) {
   );
 }
 
-// Public machine-status view, mirroring the sheet's chain → location → cab grid.
+// Public machine-status view, one arcade at a time: pick a location, see its
+// cab grid. Admins can jump straight into the editor from here.
 export default function StatusView({ arcades, focus, onExit }) {
-  const listRef = useRef(null);
+  const { isAdmin } = useAuth();
+  const withStatus = useMemo(() => arcades.filter(arcadeHasStatus), [arcades]);
+  const [selectedId, setSelectedId] = useState(focus ?? withStatus[0]?.id ?? arcades[0]?.id ?? null);
+  const [editing, setEditing] = useState(false);
 
-  useEffect(() => {
-    if (!focus || !listRef.current) return;
-    const el = listRef.current.querySelector(`[data-status-arcade="${CSS.escape(focus)}"]`);
-    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
-  }, [focus]);
+  const arcade = arcades.find((a) => a.id === selectedId) ?? withStatus[0] ?? arcades[0];
 
-  const sections = CHAINS
-    .map((chain) => ({ chain, list: arcades.filter((a) => a.chain === chain && arcadeHasStatus(a)) }))
-    .filter((s) => s.list.length > 0);
+  // Picker options grouped by chain (known chains first, then any others)
+  const groups = useMemo(() => {
+    const present = [...new Set(arcades.map((a) => a.chain))];
+    const ordered = [
+      ...CHAINS.filter((c) => present.includes(c)),
+      ...present.filter((c) => !CHAINS.includes(c)).sort(),
+    ];
+    return ordered.map((chain) => ({ chain, list: arcades.filter((a) => a.chain === chain) }));
+  }, [arcades]);
+
+  if (!arcade) {
+    return (
+      <section className="status-view">
+        <div className="admin-form-head">
+          <h2>Machine status</h2>
+          <button type="button" className="clear-btn" onClick={onExit}>← Back to map</button>
+        </div>
+        <p className="empty-state">No arcades loaded.</p>
+      </section>
+    );
+  }
+
+  if (editing && isAdmin) {
+    return (
+      <section className="status-view">
+        <MachineStatusEditor
+          key={arcade.id}
+          arcade={arcade}
+          onDone={() => setEditing(false)}
+          onCancel={() => setEditing(false)}
+        />
+      </section>
+    );
+  }
+
+  const noCabs = !STATUS_GAMES.some((gk) => summarizeGame(getGameEntry(arcade, gk)));
 
   return (
-    <section className="status-view" ref={listRef}>
+    <section className="status-view">
       <div className="admin-form-head">
         <h2>Machine status</h2>
         <button type="button" className="clear-btn" onClick={onExit}>← Back to map</button>
@@ -77,38 +112,49 @@ export default function StatusView({ arcades, focus, onExit }) {
         </span>
       </div>
 
-      {sections.length === 0 && (
-        <p className="empty-state">No machine status recorded yet.</p>
-      )}
-
-      {sections.map(({ chain, list }) => (
-        <section key={chain} className="status-chain">
-          <h3><i style={{ background: CHAIN_COLORS[chain] }} /> {chain}</h3>
-          {list.map((a) => (
-            <article
-              key={a.id ?? a.name}
-              className={`status-arcade ${focus === a.id ? "focused" : ""}`}
-              data-status-arcade={a.id ?? a.name}
-            >
-              <header>
-                <h4>{a.branch}</h4>
-                <span className="chain-badge" style={{ background: CHAIN_COLORS[a.chain] || "#64748b" }}>
-                  {a.chain}
-                </span>
-                {STATUS_GAMES.map((gk) =>
-                  a.prices?.[gk] ? (
-                    <span key={gk} className="price-chip">{GAME_LABEL[gk]}: {a.prices[gk]}</span>
-                  ) : null
-                )}
-              </header>
-              {STATUS_GAMES.map((gk) => {
-                const entry = getGameEntry(a, gk);
-                return entry ? <GameStatusBlock key={gk} gameKey={gk} entry={entry} /> : null;
-              })}
-            </article>
+      <div className="status-picker">
+        <select
+          value={arcade.id}
+          onChange={(e) => setSelectedId(e.target.value)}
+          aria-label="Choose an arcade"
+        >
+          {groups.map(({ chain, list }) => (
+            <optgroup key={chain} label={chain}>
+              {list.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.branch}{arcadeHasStatus(a) ? "" : " · no status"}
+                </option>
+              ))}
+            </optgroup>
           ))}
-        </section>
-      ))}
+        </select>
+        {isAdmin && (
+          <button type="button" className="submit-btn" onClick={() => setEditing(true)}>
+            ✎ Edit
+          </button>
+        )}
+      </div>
+
+      <article className="status-arcade">
+        <header>
+          <h4>{arcade.branch}</h4>
+          <span className="chain-badge" style={{ background: CHAIN_COLORS[arcade.chain] || "#64748b" }}>
+            {arcade.chain}
+          </span>
+          {STATUS_GAMES.map((gk) =>
+            arcade.prices?.[gk] ? (
+              <span key={gk} className="price-chip">{GAME_LABEL[gk]}: {arcade.prices[gk]}</span>
+            ) : null
+          )}
+        </header>
+        {STATUS_GAMES.map((gk) => {
+          const entry = getGameEntry(arcade, gk);
+          return entry ? <GameStatusBlock key={gk} gameKey={gk} entry={entry} /> : null;
+        })}
+        {noCabs && (
+          <p className="dim-note">No machine status recorded for this arcade yet.</p>
+        )}
+      </article>
 
       <p className="sheet-link">
         Originally sourced from the{" "}

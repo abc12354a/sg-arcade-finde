@@ -695,15 +695,25 @@ button { -webkit-tap-highlight-color: transparent; }
 }
 .status-legend .dim-note { flex-basis: 100%; }
 
-.status-chain { margin-bottom: 18px; }
-.status-chain h3 {
-  margin: 0 0 8px;
-  font-size: 1.05rem;
+/* Arcade picker: single-location status view */
+.status-picker {
   display: flex;
-  align-items: center;
   gap: 8px;
+  align-items: center;
+  margin: 12px 0 14px;
 }
-.status-chain h3 i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+.status-picker select {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.status-picker select:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .status-arcade {
   border: 1px solid var(--border);
@@ -712,7 +722,6 @@ button { -webkit-tap-highlight-color: transparent; }
   margin-bottom: 10px;
   box-shadow: var(--shadow-sm);
 }
-.status-arcade.focused { box-shadow: 0 0 0 2px var(--accent); }
 .status-arcade header {
   display: flex;
   align-items: center;

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { deleteField, doc, setDoc } from "firebase/firestore";
 import { db } from "../firebase.js";
 import { GAMES, STATUS, STATUS_GAMES } from "../constants.js";
+import { todaySG } from "../utils/status.js";
 
 const GAME_LABELS = Object.fromEntries(GAMES.map((g) => [g.key, g.label]));
 
@@ -65,24 +66,42 @@ export default function MachineStatusEditor({ arcade, onDone, onCancel }) {
     setError(null);
     setBusy(true);
     try {
+      const today = todaySG();
       const payload = {};
       for (const g of STATUS_GAMES) {
+        // Original cabs keyed by id|side, so edits/inserts/deletions anywhere
+        // in the table still pair with the right stored row.
+        const origByKey = new Map(
+          (arcade?.machineStatus?.[g]?.cabs ?? []).map((c) => [`${c.id}|${c.side ?? ""}`, c])
+        );
         const cabs = form[g].cabs
-          .map((c) => ({
-            id: c.id.trim(),
-            side: g === "maimai" ? c.side || "1P" : null,
-            status: c.status,
-            note: c.note.trim(),
-            reportedAt: c.reportedAt || null,
-          }))
+          .map((c) => {
+            const next = {
+              id: c.id.trim(),
+              side: g === "maimai" ? c.side || "1P" : null,
+              status: c.status,
+              note: c.note.trim(),
+            };
+            const orig = origByKey.get(`${next.id}|${next.side ?? ""}`);
+            // A cab that changed (or is new) is being reported now: stamp it
+            // with today's date unless the editor deliberately picked one.
+            const changed =
+              !orig ||
+              next.id !== (orig.id ?? "") ||
+              next.side !== (orig.side ?? null) ||
+              next.status !== (orig.status ?? "unknown") ||
+              next.note !== (orig.note ?? "");
+            const datePicked = !!orig && c.reportedAt !== (orig.reportedAt ?? "");
+            return { ...next, reportedAt: changed && !datePicked ? today : c.reportedAt || null };
+          })
           .filter((c) => c.id);
         const version = form[g].version.trim();
         const notes = form[g].notes.trim();
         // A game cleared to nothing has its entry deleted from the doc;
-        // otherwise keep the sheet-import asOf stamp the form doesn't manage.
+        // surviving entries get asOf = save date.
         payload[g] =
           cabs.length || version || notes
-            ? { version, notes, asOf: arcade?.machineStatus?.[g]?.asOf ?? null, cabs }
+            ? { version, notes, asOf: today, cabs }
             : deleteField();
       }
       await setDoc(doc(db, "arcades", arcade.id), { machineStatus: payload }, { merge: true });
@@ -159,6 +178,9 @@ export default function MachineStatusEditor({ arcade, onDone, onCancel }) {
         </fieldset>
       ))}
 
+      <p className="dim-note">
+        Saving stamps “info as of” — and the reported date of cabs you changed — with today’s date (SG, UTC+8).
+      </p>
       {error && <p className="form-error">{error}</p>}
       <div className="admin-actions">
         <button type="submit" className="submit-btn" disabled={busy}>{busy ? "Saving…" : "Save"}</button>

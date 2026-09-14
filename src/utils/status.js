@@ -33,3 +33,9 @@ export function formatDate(iso) {
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleDateString("en-SG", { day: "numeric", month: "short", year: "numeric" });
 }
+
+// Current date in Singapore (UTC+8) as "YYYY-MM-DD". Status edits are stamped
+// with it on save, regardless of the editor's local timezone.
+export function todaySG() {
+  return new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
