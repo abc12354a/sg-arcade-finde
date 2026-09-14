@@ -15,12 +15,20 @@ function makeIcon(chain, selected) {
   });
 }
 
-// Pans/zooms the map when the focus target changes (selected arcade or user position)
-function Recenter({ target, zoom }) {
+// Pans/zooms the map when the focus target changes (selected arcade or user
+// position). On mobile the pane can be display:none — Leaflet's flyTo math
+// divides by the map size and throws "Invalid LatLng object: (NaN, NaN)" at
+// size 0, and getSize() caches the 0 it saw while hidden — so skip while
+// hidden, and refresh the cached size (invalidateSize) before flying.
+function Recenter({ target, zoom, show }) {
   const map = useMap();
   useEffect(() => {
-    if (target) map.flyTo(target, zoom ?? Math.max(map.getZoom(), 14), { duration: 0.6 });
-  }, [target?.lat, target?.lng]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!target || !show) return;
+    const el = map.getContainer();
+    if (!el.clientWidth || !el.clientHeight) return;
+    map.invalidateSize();
+    map.flyTo(target, zoom ?? Math.max(map.getZoom(), 14), { duration: 0.6 });
+  }, [target?.lat, target?.lng, show]); // eslint-disable-line react-hooks/exhaustive-deps
   return null;
 }
 
@@ -72,7 +80,7 @@ export default function MapView({
         url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
 
-      <Recenter target={focusTarget} />
+      <Recenter target={focusTarget} show={active} />
       <InvalidateOnShow show={active} />
 
       {userPos && radius && (
