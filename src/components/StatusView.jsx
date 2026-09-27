@@ -1,29 +1,90 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "../auth/AuthContext.jsx";
 import { CHAINS, CHAIN_COLORS, GAMES, STATUS, STATUS_BY_KEY, STATUS_GAMES } from "../constants.js";
-import { arcadeHasStatus, formatDate, getGameEntry, summarizeGame } from "../utils/status.js";
+import { arcadeHasStatus, formatDate, getGameEntry, groupCabs, summarizeGame, worstStatusOf } from "../utils/status.js";
 import MachineStatusEditor from "./MachineStatusEditor.jsx";
+import { IconChevron } from "./icons.jsx";
 
 const GAME_LABEL = Object.fromEntries(GAMES.map((g) => [g.key, g.label]));
 const SHEET_URL =
   "https://docs.google.com/spreadsheets/d/1yR7zAoR0DErE5iigS-VMBo4Cm5vlHP46gQsjW-t0MYc/htmlview";
 
-function CabCell({ cab }) {
-  const status = STATUS_BY_KEY[cab.status] ?? STATUS_BY_KEY.unknown;
+// One cabinet row: collapsed = id + per-side status slots, click to expand
+// each side's details (status label, note, report date).
+function CabRow({ group, gameKey }) {
+  const [open, setOpen] = useState(false);
+  const twoSided = gameKey === "maimai";
+  const worst = worstStatusOf(group.entries.map((e) => e.cab));
+  // Deterministic slots: maimai always shows 1P then 2P (a missing side gets
+  // a dashed placeholder), odd sides appended; other games one slot per entry.
+  const slots = twoSided
+    ? [
+        { side: "1P", entry: group.entries.find((e) => e.cab.side === "1P") },
+        { side: "2P", entry: group.entries.find((e) => e.cab.side === "2P") },
+        ...group.entries
+          .filter((e) => e.cab.side !== "1P" && e.cab.side !== "2P")
+          .map((e) => ({ side: e.cab.side || "", entry: e })),
+      ]
+    : group.entries.map((e) => ({ side: null, entry: e }));
+
   return (
-    <div
-      className={`cab-cell s-${status.key}`}
-      title={cab.note || `${cab.id} ${cab.side ?? ""}`.trim()}
-    >
-      <div className="cab-head">
-        <strong>{cab.id}</strong>
-        {cab.side && <span className="cab-side">{cab.side}</span>}
-        <span className="cab-status" aria-label={status.short}>{status.emoji}</span>
-      </div>
-      {cab.note && <p className="cab-note">{cab.note}</p>}
-      <span className="cab-date">
-        {cab.reportedAt ? `reported ${formatDate(cab.reportedAt)}` : "no report date"}
-      </span>
+    <div className={`cab-row s-${worst}${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="cab-row-btn"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <strong className="cab-row-id">{group.id}</strong>
+        <span className="cab-row-slots">
+          {slots.map(({ side, entry }, i) => {
+            if (!entry) {
+              return (
+                <span key={`empty-${i}`} className="cab-slot cab-slot-empty" title="Not listed">
+                  <span aria-hidden="true">—</span>
+                  <span className="sr-only">not listed</span>
+                </span>
+              );
+            }
+            const status = STATUS_BY_KEY[entry.cab.status] ?? STATUS_BY_KEY.unknown;
+            const title = [
+              `${side ? `${side}: ` : ""}${status.label}`,
+              entry.cab.note,
+              entry.cab.reportedAt ? `reported ${formatDate(entry.cab.reportedAt)}` : null,
+            ].filter(Boolean).join("\n");
+            return (
+              <span key={`${side}-${i}`} className={`cab-slot s-${status.key}`} title={title}>
+                {twoSided && <span className="cab-slot-side">{side}</span>}
+                <span className="sr-only">{`${side ? `${side} ` : ""}${status.short}`}</span>
+                <span aria-hidden="true">{status.emoji}</span>
+                {entry.cab.note && (
+                  <span className="cab-slot-dot" aria-hidden="true" title="Has notes">◆</span>
+                )}
+              </span>
+            );
+          })}
+        </span>
+        <IconChevron size={16} className="cab-chevron" />
+      </button>
+      {open && (
+        <div className="cab-row-detail">
+          {group.entries.map(({ cab, idx }) => {
+            const status = STATUS_BY_KEY[cab.status] ?? STATUS_BY_KEY.unknown;
+            return (
+              <div key={idx} className="cab-detail">
+                <div className="cab-detail-head">
+                  {twoSided && <span className="cab-side">{cab.side || "—"}</span>}
+                  <span><span aria-hidden="true">{status.emoji}</span> {status.short}</span>
+                </div>
+                {cab.note && <p className="cab-note">{cab.note}</p>}
+                <span className="cab-date">
+                  {cab.reportedAt ? `reported ${formatDate(cab.reportedAt)}` : "no report date"}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -40,9 +101,9 @@ function GameStatusBlock({ gameKey, entry }) {
         {entry.asOf && <span className="as-of">info as of {formatDate(entry.asOf)}</span>}
       </div>
       {entry.notes && <p className="game-status-notes">{entry.notes}</p>}
-      <div className="cab-grid">
-        {(entry.cabs ?? []).map((cab, i) => (
-          <CabCell key={`${cab.id}-${cab.side ?? "x"}-${i}`} cab={cab} />
+      <div className="cab-rows">
+        {groupCabs(entry.cabs).map((group) => (
+          <CabRow key={group.key} group={group} gameKey={gameKey} />
         ))}
       </div>
     </div>
@@ -50,7 +111,7 @@ function GameStatusBlock({ gameKey, entry }) {
 }
 
 // Public machine-status view, one arcade at a time: pick a location, see its
-// cab grid. Admins can jump straight into the editor from here.
+// cabinet rows. Admins can jump straight into the editor from here.
 export default function StatusView({ arcades, focus, onExit }) {
   const { isAdmin } = useAuth();
   const withStatus = useMemo(() => arcades.filter(arcadeHasStatus), [arcades]);
@@ -105,7 +166,7 @@ export default function StatusView({ arcades, focus, onExit }) {
 
       <div className="status-legend">
         {STATUS.map((s) => (
-          <span key={s.key}>{s.emoji} {s.label}</span>
+          <span key={s.key} title={s.label}>{s.emoji} {s.short}</span>
         ))}
         <span className="dim-note">
           Statuses change only when admins update them; “reported” dates are the last community report.
@@ -149,7 +210,9 @@ export default function StatusView({ arcades, focus, onExit }) {
         </header>
         {STATUS_GAMES.map((gk) => {
           const entry = getGameEntry(arcade, gk);
-          return entry ? <GameStatusBlock key={gk} gameKey={gk} entry={entry} /> : null;
+          return entry ? (
+            <GameStatusBlock key={`${arcade.id}:${gk}`} gameKey={gk} entry={entry} />
+          ) : null;
         })}
         {noCabs && (
           <p className="dim-note">No machine status recorded for this arcade yet.</p>

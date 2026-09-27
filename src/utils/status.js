@@ -7,6 +7,12 @@ export function getGameEntry(arcade, gameKey) {
   return arcade?.machineStatus?.[gameKey] ?? null;
 }
 
+// Worst status key across a list of cab entries (drives row tinting).
+export function worstStatusOf(cabs) {
+  const statusOf = (c) => c.status ?? "unknown";
+  return (cabs ?? []).reduce((w, c) => (SEVERITY[statusOf(c)] > SEVERITY[w] ? statusOf(c) : w), "ok");
+}
+
 // entry = arcade.machineStatus[gameKey] -> { total, ok, worst } | null
 export function summarizeGame(entry) {
   const cabs = entry?.cabs ?? [];
@@ -15,8 +21,29 @@ export function summarizeGame(entry) {
   return {
     total: cabs.length,
     ok: cabs.filter((c) => statusOf(c) === "ok").length,
-    worst: cabs.reduce((w, c) => (SEVERITY[statusOf(c)] > SEVERITY[w] ? statusOf(c) : w), "ok"),
+    worst: worstStatusOf(cabs),
   };
+}
+
+// Group a flat cabs[] by cabinet id, preserving first-appearance order.
+// Returns [{ id, key, entries: [{ cab, idx }] }]: `idx` is the index in the
+// flat array; `key` is unique (blank ids get their own group, keyed "#idx")
+// so it is safe to use as a React key.
+export function groupCabs(cabs) {
+  const groups = [];
+  const byId = new Map();
+  (cabs ?? []).forEach((cab, idx) => {
+    const id = cab.id ?? "";
+    const key = id.trim() ? id.trim() : `#${idx}`; // blanks never merge
+    let g = byId.get(key);
+    if (!g) {
+      g = { id, key, entries: [] };
+      byId.set(key, g);
+      groups.push(g);
+    }
+    g.entries.push({ cab, idx });
+  });
+  return groups;
 }
 
 export function arcadeHasStatus(arcade) {

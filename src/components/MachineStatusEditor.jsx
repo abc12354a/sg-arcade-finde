@@ -2,12 +2,42 @@ import { useState } from "react";
 import { deleteField, doc, setDoc } from "firebase/firestore";
 import { db } from "../firebase.js";
 import { GAMES, STATUS, STATUS_GAMES } from "../constants.js";
-import { todaySG } from "../utils/status.js";
+import { groupCabs, todaySG } from "../utils/status.js";
+import { IconChevron } from "./icons.jsx";
 
 const GAME_LABELS = Object.fromEntries(GAMES.map((g) => [g.key, g.label]));
 
+// Stable per-cabinet row tag: entries sharing an id share a row; blank ids
+// get their own row, so retyping an id mid-edit never merges/splits rows
+// (which would drop input focus). _row never reaches Firestore — handleSave
+// rebuilds each cab from explicit fields.
+function tagRows(cabs) {
+  const out = [];
+  groupCabs(cabs).forEach((g, gi) => {
+    g.entries.forEach(({ cab }) => out.push({ ...cab, _row: `r${gi}` }));
+  });
+  return out;
+}
+
+// Rows keyed by _row (stable), not by id — see tagRows.
+function rowsFromCabs(cabs) {
+  const rows = [];
+  const byRow = new Map();
+  cabs.forEach((cab, idx) => {
+    let r = byRow.get(cab._row);
+    if (!r) {
+      r = { rowKey: cab._row, id: cab.id, entries: [] };
+      byRow.set(cab._row, r);
+      rows.push(r);
+    }
+    r.entries.push({ cab, idx });
+  });
+  return rows;
+}
+
 // Deep-copy the arcade's machineStatus into editable form state, always with
-// both status-game keys present. Sides are "" for none (chunithm is single-sided).
+// both status-game keys present. Sides are "" for none (chunithm is
+// single-sided). Cabs are tagged into stable cabinet rows (see tagRows).
 function normalizeStatus(arcade) {
   const out = {};
   for (const g of STATUS_GAMES) {
@@ -15,16 +45,115 @@ function normalizeStatus(arcade) {
     out[g] = {
       version: e?.version ?? "",
       notes: e?.notes ?? "",
-      cabs: (e?.cabs ?? []).map((c) => ({
-        id: c.id ?? "",
-        side: c.side ?? "",
-        status: c.status ?? "unknown",
-        note: c.note ?? "",
-        reportedAt: c.reportedAt ?? "",
-      })),
+      cabs: tagRows(
+        (e?.cabs ?? []).map((c) => ({
+          id: c.id ?? "",
+          side: c.side ?? "",
+          status: c.status ?? "unknown",
+          note: c.note ?? "",
+          reportedAt: c.reportedAt ?? "",
+        })),
+      ),
     };
   }
   return out;
+}
+
+// One cabinet row: single id input + per-side status icon toggles; expand for
+// per-side note/date editing, adding a missing side, or removal.
+function MseRow({ game, row, onUpdate, onRemove, onAddSide }) {
+  const [open, setOpen] = useState(false);
+  const twoSided = game === "maimai";
+  const rowIdxs = row.entries.map((e) => e.idx);
+  return (
+    <div className={`mse-row${open ? " open" : ""}`}>
+      <div className="mse-row-top">
+        <input
+          className="mse-id-input"
+          value={row.entries[0].cab.id}
+          onChange={(e) => onUpdate(rowIdxs, { id: e.target.value })}
+          placeholder="A317"
+          aria-label="Cabinet id"
+        />
+        <div className="mse-sides">
+          {row.entries.map(({ cab, idx }) => (
+            <span key={idx} className="mse-side">
+              {twoSided && <span className="mse-side-label">{cab.side || "—"}</span>}
+              <span
+                className="mse-st-group"
+                role="group"
+                aria-label={`Status ${cab.side || ""}`.trim()}
+              >
+                {STATUS.map((s) => (
+                  <button
+                    key={s.key}
+                    type="button"
+                    className={`mse-st s-${s.key}${cab.status === s.key ? " on" : ""}`}
+                    aria-pressed={cab.status === s.key}
+                    title={s.label}
+                    onClick={() => onUpdate([idx], { status: s.key })}
+                  >
+                    <span aria-hidden="true">{s.emoji}</span>
+                    <span className="sr-only">{s.short}</span>
+                  </button>
+                ))}
+              </span>
+            </span>
+          ))}
+        </div>
+        <button
+          type="button"
+          className="mse-expand"
+          aria-expanded={open}
+          aria-label="Toggle details"
+          onClick={() => setOpen((o) => !o)}
+        >
+          <IconChevron size={16} className="cab-chevron" />
+        </button>
+      </div>
+      {open && (
+        <div className="mse-row-detail">
+          {row.entries.map(({ cab, idx }) => (
+            <div key={idx} className="mse-side-block">
+              {twoSided && <div className="mse-side-head">{cab.side || "—"}</div>}
+              <label>
+                <span>Note</span>
+                <input
+                  value={cab.note}
+                  onChange={(e) => onUpdate([idx], { note: e.target.value })}
+                  placeholder="e.g. 1P button 6 drops inputs"
+                />
+              </label>
+              <label>
+                <span>Last reported</span>
+                <input
+                  type="date"
+                  value={cab.reportedAt || ""}
+                  onChange={(e) => onUpdate([idx], { reportedAt: e.target.value })}
+                />
+              </label>
+              <button type="button" className="clear-btn danger" onClick={() => onRemove([idx])}>
+                Remove side
+              </button>
+            </div>
+          ))}
+          {twoSided &&
+            ["1P", "2P"]
+              .filter((s) => !row.entries.some((e) => e.cab.side === s))
+              .map((s) => (
+                <button key={s} type="button" className="clear-btn" onClick={() => onAddSide(row, s)}>
+                  + Add {s}
+                </button>
+              ))}
+          {row.entries.length > 1 && (
+            <button type="button" className="clear-btn danger" onClick={() => onRemove(rowIdxs)}>
+              Remove cabinet
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // Per-arcade machine status editor (opened from the admin table's "Status" action).
@@ -37,29 +166,48 @@ export default function MachineStatusEditor({ arcade, onDone, onCancel }) {
   const setField = (game, key) => (e) =>
     setForm((f) => ({ ...f, [game]: { ...f[game], [key]: e.target.value } }));
 
-  const updateCab = (game, idx, patch) =>
+  // Patch one cab ([idx]) or a whole cabinet row (all its indices, e.g. when
+  // renaming the cabinet id).
+  const updateCabs = (game, idxs, patch) =>
     setForm((f) => ({
       ...f,
       [game]: {
         ...f[game],
-        cabs: f[game].cabs.map((c, i) => (i === idx ? { ...c, ...patch } : c)),
+        cabs: f[game].cabs.map((c, i) => (idxs.includes(i) ? { ...c, ...patch } : c)),
       },
     }));
 
+  // Add a whole cabinet: maimai gets both sides, chunithm a single entry.
+  // The fresh _row can't collide with existing rows.
   const addCab = (game) =>
+    setForm((f) => {
+      const row = `new-${Date.now()}`;
+      const base = { id: "", status: "ok", note: "", reportedAt: "", _row: row };
+      const cabs =
+        game === "maimai"
+          ? [...f[game].cabs, { ...base, side: "1P" }, { ...base, side: "2P" }]
+          : [...f[game].cabs, { ...base, side: "" }];
+      return { ...f, [game]: { ...f[game], cabs } };
+    });
+
+  const removeCabs = (game, idxs) =>
+    setForm((f) => ({
+      ...f,
+      [game]: { ...f[game], cabs: f[game].cabs.filter((_, i) => !idxs.includes(i)) },
+    }));
+
+  // Append a missing side (maimai only), joining the row's cabinet id.
+  const addSide = (game, row, side) =>
     setForm((f) => ({
       ...f,
       [game]: {
         ...f[game],
         cabs: [
           ...f[game].cabs,
-          { id: "", side: game === "maimai" ? "1P" : "", status: "ok", note: "", reportedAt: "" },
+          { id: row.id, side, status: "ok", note: "", reportedAt: "", _row: row.rowKey },
         ],
       },
     }));
-
-  const removeCab = (game, idx) =>
-    setForm((f) => ({ ...f, [game]: { ...f[game], cabs: f[game].cabs.filter((_, i) => i !== idx) } }));
 
   async function handleSave(e) {
     e.preventDefault();
@@ -70,7 +218,7 @@ export default function MachineStatusEditor({ arcade, onDone, onCancel }) {
       const payload = {};
       for (const g of STATUS_GAMES) {
         // Original cabs keyed by id|side, so edits/inserts/deletions anywhere
-        // in the table still pair with the right stored row.
+        // in the row list still pair with the right stored row.
         const origByKey = new Map(
           (arcade?.machineStatus?.[g]?.cabs ?? []).map((c) => [`${c.id}|${c.side ?? ""}`, c])
         );
@@ -120,63 +268,40 @@ export default function MachineStatusEditor({ arcade, onDone, onCancel }) {
         <button type="button" className="clear-btn" onClick={onCancel}>← Back to list</button>
       </div>
 
-      {STATUS_GAMES.map((g) => (
-        <fieldset key={g} className="mse-game">
-          <legend>{GAME_LABELS[g]} · {form[g].cabs.length} entries</legend>
-          <div className="mse-meta">
-            <label><span>Version</span>
-              <input value={form[g].version} onChange={setField(g, "version")} placeholder="1.65-A" /></label>
-            <label><span>Location notes</span>
-              <textarea rows={2} value={form[g].notes} onChange={setField(g, "notes")}
-                placeholder="Fans installed, layout notes, …" /></label>
-          </div>
-          <div className="admin-table-wrap">
-            <table className="admin-table mse-table">
-              <thead>
-                <tr><th>Cab</th><th>Side</th><th>Status</th><th>Note</th><th>Last reported</th><th></th></tr>
-              </thead>
-              <tbody>
-                {form[g].cabs.map((cab, idx) => (
-                  <tr key={idx}>
-                    <td><input value={cab.id} onChange={(e) => updateCab(g, idx, { id: e.target.value })}
-                      placeholder="A317" /></td>
-                    <td>
-                      {g === "maimai" ? (
-                        <select value={cab.side || "1P"} onChange={(e) => updateCab(g, idx, { side: e.target.value })}>
-                          <option value="1P">1P</option>
-                          <option value="2P">2P</option>
-                        </select>
-                      ) : (
-                        <span className="dim">—</span>
-                      )}
-                    </td>
-                    <td>
-                      <select value={cab.status} onChange={(e) => updateCab(g, idx, { status: e.target.value })}>
-                        {STATUS.map((s) => (
-                          <option key={s.key} value={s.key}>{s.emoji} {s.short}</option>
-                        ))}
-                      </select>
-                    </td>
-                    <td><input value={cab.note} onChange={(e) => updateCab(g, idx, { note: e.target.value })}
-                      placeholder="e.g. 1P button 6 drops inputs" /></td>
-                    <td><input type="date" value={cab.reportedAt || ""}
-                      onChange={(e) => updateCab(g, idx, { reportedAt: e.target.value })} /></td>
-                    <td className="row-actions">
-                      <button type="button" className="danger" onClick={() => removeCab(g, idx)}>Remove</button>
-                    </td>
-                  </tr>
+      {STATUS_GAMES.map((g) => {
+        const rows = rowsFromCabs(form[g].cabs);
+        return (
+          <fieldset key={g} className="mse-game">
+            <legend>{GAME_LABELS[g]} · {rows.length} cabinets · {form[g].cabs.length} entries</legend>
+            <div className="mse-meta">
+              <label><span>Version</span>
+                <input value={form[g].version} onChange={setField(g, "version")} placeholder="1.65-A" /></label>
+              <label><span>Location notes</span>
+                <textarea rows={2} value={form[g].notes} onChange={setField(g, "notes")}
+                  placeholder="Fans installed, layout notes, …" /></label>
+            </div>
+            {rows.length > 0 ? (
+              <div className="mse-rows">
+                {rows.map((row) => (
+                  <MseRow
+                    key={row.rowKey}
+                    game={g}
+                    row={row}
+                    onUpdate={(idxs, patch) => updateCabs(g, idxs, patch)}
+                    onRemove={(idxs) => removeCabs(g, idxs)}
+                    onAddSide={(r, side) => addSide(g, r, side)}
+                  />
                 ))}
-                {form[g].cabs.length === 0 && (
-                  <tr><td colSpan={6} className="dim">No cabs recorded</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-          <div className="mse-actions">
-            <button type="button" className="clear-btn" onClick={() => addCab(g)}>+ Add cab</button>
-          </div>
-        </fieldset>
-      ))}
+              </div>
+            ) : (
+              <p className="dim">No cabs recorded</p>
+            )}
+            <div className="mse-actions">
+              <button type="button" className="clear-btn" onClick={() => addCab(g)}>+ Add cabinet</button>
+            </div>
+          </fieldset>
+        );
+      })}
 
       <p className="dim-note">
         Saving stamps “info as of” — and the reported date of cabs you changed — with today’s date (SG, UTC+8).
